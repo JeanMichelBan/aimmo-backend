@@ -181,54 +181,57 @@ async function scraperAgorastore(dept) {
   }
 }
 
-// ─── Apify (LeBonCoin, SeLoger) ───────────────────────────
+// ─── Apify (LeBonCoin) ────────────────────────────────────
 async function scraperViaApify(source, dept) {
   try {
-    const actors = {
-      'leboncoin': 'dtrungtin/leboncoin-real-estate-scraper',
-      'seloger': 'dtrungtin/seloger-scraper'
-    };
+    if (source !== 'leboncoin') return [];
 
-    const actor = actors[source];
-    if (!actor) return [];
-
-    // Démarrer le run Apify
-    const runUrl = `https://api.apify.com/v2/acts/${actor}/run-sync-get-dataset-items?token=${process.env.APIFY_API_KEY}&timeout=60`;
+    // URL de recherche Leboncoin immobilier
+    const searchUrl = dept
+      ? `https://www.leboncoin.fr/recherche?category=9&locations=${dept}`
+      : `https://www.leboncoin.fr/recherche?category=9`;
 
     const body = {
-      startUrls: [{
-        url: source === 'leboncoin'
-          ? `https://www.leboncoin.fr/ventes_immobilieres/offres/${dept ? 'd=' + dept : 'france'}/`
-          : `https://www.seloger.com/achat/immobilier/${dept ? dept + '/' : ''}annonces/`
-      }],
-      maxItems: 20
+      startUrls: [searchUrl],
+      limit: 20,
+      proxyConfiguration: {
+        useApifyProxy: true,
+        apifyProxyGroups: ['RESIDENTIAL']
+      }
     };
+
+    // Lancer le run et attendre le résultat (sync)
+    const runUrl = `https://api.apify.com/v2/acts/fatihtahta~leboncoin-fr-scraper/run-sync-get-dataset-items?token=${process.env.APIFY_API_KEY}&timeout=120`;
 
     const res = await fetch(runUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      timeout: 90000
+      timeout: 130000
     });
 
-    if (!res.ok) return [];
+    if (!res.ok) {
+      console.error('[Apify] Erreur HTTP:', res.status, await res.text());
+      return [];
+    }
 
     const items = await res.json();
 
     return (Array.isArray(items) ? items : []).slice(0, 20).map(item => ({
-      titre: item.title || item.titre || 'Annonce immobilière',
+      titre: item.title || 'Annonce LeBonCoin',
       description: item.description || '',
-      url_source: item.url || item.link || '',
-      source: source === 'leboncoin' ? 'LeBonCoin' : 'SeLoger',
+      url_source: item.url || '',
+      source: 'LeBonCoin',
       badge: 'badge-cl',
-      surface: item.surface ? parseInt(item.surface) : null,
-      prix: item.price ? parseInt(String(item.price).replace(/\D/g, '')) : null,
-      cp: item.zipCode || item.codePostal || null,
-      ville: item.city || item.ville || null,
-      type: detecterType(item.title || item.titre || ''),
-      kws: detecterMotsCles(item.title + ' ' + (item.description || '')),
-      photos: item.images || item.photos || [],
-      date_annonce: item.publishedAt || new Date().toISOString(),
+      surface: item.property?.surface_m2 || null,
+      prix: item.pricing?.amount_eur || null,
+      cp: item.location?.zipcode || null,
+      ville: item.location?.city || null,
+      type: detecterType(item.title || ''),
+      kws: detecterMotsCles((item.title || '') + ' ' + (item.description || '')),
+      photos: item.media?.images?.urls || [],
+      dpe: item.property?.energy?.rating || null,
+      date_annonce: item.listing?.first_publication_date || new Date().toISOString(),
       is_new: true,
       created_at: new Date().toISOString()
     }));
