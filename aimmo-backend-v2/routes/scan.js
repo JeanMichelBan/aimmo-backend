@@ -211,7 +211,7 @@ async function scraperViaApify(source, dept) {
       url_source: item.url || '',
       source: 'LeBonCoin',
       badge: 'badge-cl',
-      surface: item.property?.surface_m2 || null,
+      surface: item.property?.surface_m2 ? Math.round(item.property.surface_m2) : null,
       prix: item.pricing?.amount_eur || null,
       cp: item.location?.zipcode || null,
       ville: item.location?.city || null,
