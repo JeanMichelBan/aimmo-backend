@@ -59,21 +59,21 @@ async function lancerScanAvecDept(dept, sources) {
 
   // SeLoger via Apify (silentflow~seloger-scraper-ppr — pay per result, proxies inclus)
   if (sources.includes('seloger')) {
-    console.log('[SCAN] Scraping SeLoger...');
+    console.log('[SCAN] Scraping Bien'ici...');
     const items = await scraperApifyAsync({
-      actorId: 'silentflow~seloger-scraper-ppr',
+      actorId: 'silentflow~bienici-scraper-ppr',
       input: {
-        startUrls: [{ url: buildSeLogerUrl(dept) }],
+        startUrls: [{ url: buildBienIciUrl(dept) }],
         pages: 3,
         deepScrape: false,
         maxItems: 50
       },
-      source: 'SeLoger',
+      source: 'BienIci',
       badge: 'badge-cl',
-      mapper: mapSeLoger
+      mapper: mapBienIci
     });
     annonces.push(...items);
-    console.log(`[SeLoger] ${items.length} annonces`);
+    console.log(`[BienIci] ${items.length} annonces`);
   }
 
   // PAP.fr via Apify (devnaz~pap-fr-scraper — critères structurés, 100% succès)
@@ -227,9 +227,9 @@ function mapLeBonCoin(item) {
   }
 }
 
-function mapSeLoger(item) {
+function mapBienIci(item) {
   try {
-    const titre = item.title || item.titre || item.name || 'Annonce SeLoger';
+    const titre = item.title || item.titre || item.name || 'Annonce Bien'ici';
     const desc = item.description || '';
     const prix = item.price || item.prix || item.priceMin || null;
     const surface = item.surface || item.area || null;
@@ -240,7 +240,7 @@ function mapSeLoger(item) {
       titre: nettoyer(titre),
       description: nettoyer(desc).slice(0, 500),
       url_source: item.url || item.link || '',
-      source: 'SeLoger',
+      source: 'BienIci',
       badge: 'badge-cl',
       surface: surface ? parseInt(surface) : null,
       prix: prix ? parseInt(String(prix).replace(/\D/g, '')) : null,
@@ -298,19 +298,12 @@ function buildLeBonCoinUrl(dept) {
   return dept ? `${base}&locations=department-${dept}` : base;
 }
 
-function buildSeLogerUrl(dept) {
-  // Format recommande par la doc de l'actor silentflow
+function buildBienIciUrl(dept) {
+  // URL de recherche Bien'ici — ventes uniquement
   if (dept) {
-    const deptSlugs = {
-      '31': 'haute-garonne-31', '75': 'paris-75', '69': 'lyon-69',
-      '13': 'marseille-13', '33': 'gironde-33', '06': 'alpes-maritimes-06',
-      '34': 'herault-34', '59': 'nord-59', '67': 'bas-rhin-67',
-      '44': 'loire-atlantique-44', '38': 'isere-38', '76': 'seine-maritime-76'
-    };
-    const slug = deptSlugs[dept] || 'departement-' + dept;
-    return 'https://www.seloger.com/immobilier/achat/immo-' + slug + '/';
+    return 'https://www.bienici.com/recherche/achat/france/departement-' + dept;
   }
-  return 'https://www.seloger.com/immobilier/achat/immo-france/';
+  return 'https://www.bienici.com/recherche/achat/france';
 }
 
 // ─── Agorastore (API publique, bonus) ─────────────────────
