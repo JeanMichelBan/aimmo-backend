@@ -163,7 +163,7 @@ async function scraperViaApify(source, dept) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           startUrls: [searchUrl],
-          limit: 20,
+          limit: 50,
           proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] }
         }),
         timeout: 15000
@@ -200,7 +200,7 @@ async function scraperViaApify(source, dept) {
     }
 
     // 3. Récupérer les items
-    const itemsRes = await fetch('https://api.apify.com/v2/datasets/' + datasetId + '/items?token=' + token + '&limit=20', { timeout: 15000 });
+    const itemsRes = await fetch('https://api.apify.com/v2/datasets/' + datasetId + '/items?token=' + token + '&limit=50', { timeout: 15000 });
     if (!itemsRes.ok) return [];
     const items = await itemsRes.json();
     console.log('[Apify]', items.length, 'items récupérés');
