@@ -299,9 +299,10 @@ function buildLeBonCoinUrl(dept) {
 }
 
 function buildBienIciUrl(dept) {
-  // URL de recherche Bien'ici — ventes uniquement
+  // URL de recherche Bien'ici — format avec code postal ou France entiere
+  // Exemple: https://www.bienici.com/recherche/achat/paris-75000
   if (dept) {
-    return 'https://www.bienici.com/recherche/achat/france/departement-' + dept;
+    return 'https://www.bienici.com/recherche/achat/departement-' + dept;
   }
   return 'https://www.bienici.com/recherche/achat/france';
 }
