@@ -11,7 +11,7 @@ const supabase = createClient(
 // ─── GET /api/annonces?dept=31&type=maison&scoreMin=7 ──────
 router.get('/', async (req, res) => {
   try {
-    const { dept, type, scoreMin, source, limit = 20, offset = 0 } = req.query;
+    const { dept, type, scoreMin, source, limit = 100, offset = 0 } = req.query;
 
     let query = supabase
       .from('annonces')
