@@ -64,6 +64,8 @@ async function lancerScanAvecDept(dept, sources) {
       actorId: 'silentflow~seloger-scraper-ppr',
       input: {
         startUrls: [{ url: buildSeLogerUrl(dept) }],
+        pages: 3,
+        deepScrape: false,
         maxItems: 50
       },
       source: 'SeLoger',
@@ -297,9 +299,18 @@ function buildLeBonCoinUrl(dept) {
 }
 
 function buildSeLogerUrl(dept) {
-  // SeLoger URL de recherche ventes — maisons + appartements
-  const base = 'https://www.seloger.com/list.htm?projects=2&types=2,1&enterprise=0&qsVersion=1.0';
-  return dept ? `${base}&places=[{cp:${dept}}]` : base;
+  // Format recommande par la doc de l'actor silentflow
+  if (dept) {
+    const deptSlugs = {
+      '31': 'haute-garonne-31', '75': 'paris-75', '69': 'lyon-69',
+      '13': 'marseille-13', '33': 'gironde-33', '06': 'alpes-maritimes-06',
+      '34': 'herault-34', '59': 'nord-59', '67': 'bas-rhin-67',
+      '44': 'loire-atlantique-44', '38': 'isere-38', '76': 'seine-maritime-76'
+    };
+    const slug = deptSlugs[dept] || 'departement-' + dept;
+    return 'https://www.seloger.com/immobilier/achat/immo-' + slug + '/';
+  }
+  return 'https://www.seloger.com/immobilier/achat/immo-france/';
 }
 
 // ─── Agorastore (API publique, bonus) ─────────────────────
