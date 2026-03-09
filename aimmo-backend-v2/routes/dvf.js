@@ -1,10 +1,41 @@
 const express = require('express');
 const router = express.Router();
 const fetch = require('node-fetch');
+const { createClient } = require('@supabase/supabase-js');
 
-// Cache simple en mémoire (évite de sur-solliciter l'API)
-const cache = new Map();
-const CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+
+// ─── Cache Supabase (remplace cache mémoire) ───────────────
+async function getCache(key) {
+  try {
+    const { data } = await supabase
+      .from('dvf_cache')
+      .select('data, expires_at')
+      .eq('cache_key', key)
+      .single();
+    if (!data) return null;
+    if (new Date(data.expires_at) < new Date()) return null; // expiré
+    return data.data;
+  } catch {
+    return null;
+  }
+}
+
+async function setCache(key, data) {
+  try {
+    await supabase.from('dvf_cache').upsert({
+      cache_key: key,
+      data,
+      created_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+    }, { onConflict: 'cache_key' });
+  } catch (e) {
+    console.error('[dvf_cache] setCache error:', e.message);
+  }
+}
 
 // ─── GET /api/dvf?commune=31555&type=maison&surface=120 ────
 router.get('/', async (req, res) => {
@@ -16,9 +47,11 @@ router.get('/', async (req, res) => {
     }
 
     const cacheKey = `${commune||cp}_${type||'all'}`;
-    const cached = cache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < CACHE_TTL) {
-      return res.json({ success: true, source: 'cache', ...cached.data });
+
+    // Vérifier cache Supabase
+    const cached = await getCache(cacheKey);
+    if (cached) {
+      return res.json({ success: true, source: 'cache', ...cached });
     }
 
     // Résoudre code commune depuis CP si nécessaire
@@ -31,7 +64,7 @@ router.get('/', async (req, res) => {
       return res.json({ success: true, transactions: [], mediane_m2: null, message: 'Commune non trouvée' });
     }
 
-    // Appel API DVF officielle (app.dvf.etalab.gouv.fr)
+    // Appel API DVF officielle
     const dvfUrl = `https://app.dvf.etalab.gouv.fr/api/mutations/dvf/?code_commune=${codeCommune}&nb_resultats=20`;
     const dvfRes = await fetch(dvfUrl, {
       headers: { 'Accept': 'application/json' },
@@ -39,21 +72,19 @@ router.get('/', async (req, res) => {
     });
 
     if (!dvfRes.ok) {
-      // Fallback sur l'API open data
       return await fallbackDVF(cp, type, surface, res);
     }
 
     const dvfData = await dvfRes.json();
     const processed = processDVFData(dvfData, type, surface);
 
-    // Mise en cache
-    cache.set(cacheKey, { ts: Date.now(), data: processed });
+    // Sauvegarder en cache Supabase
+    await setCache(cacheKey, processed);
 
     res.json({ success: true, source: 'dvf_etalab', ...processed });
 
   } catch (e) {
     console.error('[/api/dvf]', e.message);
-    // En cas d'erreur, retourner données vides plutôt qu'une erreur
     res.json({ success: false, transactions: [], mediane_m2: null, error: e.message });
   }
 });
@@ -64,7 +95,10 @@ router.get('/stats', async (req, res) => {
     const { cp, type } = req.query;
     if (!cp) return res.status(400).json({ error: 'CP requis' });
 
-    // API prix-immo (alternative gratuite)
+    const cacheKey = `stats_${cp}_${type||'all'}`;
+    const cached = await getCache(cacheKey);
+    if (cached) return res.json({ success: true, source: 'cache', cp, ...cached });
+
     const url = `https://api.priximmobilier.fr/v1/transactions?code_postal=${cp}&type_local=${mapType(type)}&limit=50`;
     const response = await fetch(url).catch(() => null);
 
@@ -74,6 +108,7 @@ router.get('/stats', async (req, res) => {
 
     const data = await response.json();
     const stats = computeStats(data.results || []);
+    await setCache(cacheKey, stats);
     res.json({ success: true, cp, ...stats });
 
   } catch (e) {
@@ -100,7 +135,6 @@ function processDVFData(raw, type, surface) {
     return { transactions: [], mediane_m2: null, nb_transactions: 0 };
   }
 
-  // Filtrer et transformer
   const transactions = mutations
     .filter(m => {
       if (!m.valeur_fonciere || !m.surface_reelle_bati) return false;
@@ -125,11 +159,9 @@ function processDVFData(raw, type, surface) {
       };
     });
 
-  // Calcul médiane prix/m²
   const pm2s = transactions.map(t => t.pm2_num).filter(Boolean).sort((a, b) => a - b);
   const mediane_m2 = pm2s.length > 0 ? pm2s[Math.floor(pm2s.length / 2)] : null;
 
-  // Ajouter l'écart par rapport à la médiane
   const withEcart = transactions.map(t => {
     if (!mediane_m2 || !t.pm2_num) return { ...t, ecart: '—', sens: 'neutral' };
     const ecartPct = Math.round(((t.pm2_num - mediane_m2) / mediane_m2) * 100);
@@ -150,14 +182,9 @@ function processDVFData(raw, type, surface) {
 }
 
 async function fallbackDVF(cp, type, surface, res) {
-  try {
-    // API alternative : api-immo.fr (données DVF agrégées par CP)
-    const url = `https://api.data.gouv.fr/api/1/datasets/5c4ae55a634f4117716d5656/`;
-    // Retourner des données vides proprement
-    res.json({ success: true, transactions: [], mediane_m2: null, nb_transactions: 0, source: 'unavailable' });
-  } catch {
-    res.json({ success: true, transactions: [], mediane_m2: null, nb_transactions: 0 });
-  }
+  // Fallback : données régionales par défaut
+  const stats = getDefaultStats(cp);
+  res.json({ success: true, transactions: [], ...stats, source: 'fallback' });
 }
 
 function computeStats(results) {
@@ -177,13 +204,12 @@ function computeStats(results) {
 function mapType(type) {
   if (!type) return '';
   const t = type.toLowerCase();
-  if (t.includes('maison') || t.includes('ferme') || t.includes('château') || t.includes('manoir')) return 'Maison';
+  if (t.includes('maison')) return 'Maison';
   if (t.includes('appart')) return 'Appartement';
   return '';
 }
 
 function getDefaultStats(cp) {
-  // Valeurs médianes par grande région (fallback)
   const regionDefaults = {
     '75': 10500, '92': 7800, '93': 4200, '94': 5800, '95': 3600,
     '69': 4800, '13': 3900, '31': 3400, '33': 3800, '06': 5200,
