@@ -13,7 +13,7 @@ const APIFY_TOKEN = process.env.APIFY_API_KEY;
 // ─── POST /api/scan ────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const { dept, sources = ['leboncoin', 'seloger', 'pap'], userId } = req.body;
+    const { dept, sources = ['leboncoin', 'bienici', 'pap'], userId } = req.body;
 
     // Répondre immédiatement, scan en arrière-plan
     res.json({ success: true, message: 'Scan démarré en arrière-plan', jobId: Date.now() });
@@ -29,7 +29,7 @@ router.post('/', async (req, res) => {
 // ─── Scan automatique (cron) ──────────────────────────────
 async function lancerScanAuto() {
   console.log('[SCAN AUTO] Démarrage...');
-  await lancerScanAvecDept(null, ['leboncoin', 'seloger', 'pap']);
+  await lancerScanAvecDept(null, ['leboncoin', 'bienici', 'pap']);
 }
 
 async function lancerScanAvecDept(dept, sources) {
@@ -40,7 +40,7 @@ async function lancerScanAvecDept(dept, sources) {
     return [];
   }
 
-  // LeBonCoin via Apify (actor existant et validé)
+  // LeBonCoin via Apify
   if (sources.includes('leboncoin')) {
     console.log('[SCAN] Scraping LeBonCoin...');
     const items = await scraperApifyAsync({
@@ -54,12 +54,12 @@ async function lancerScanAvecDept(dept, sources) {
       mapper: mapLeBonCoin
     });
     annonces.push(...items);
-    console.log(`[LeBonCoin] ${items.length} annonces`);
+    console.log('[LeBonCoin] ' + items.length + ' annonces');
   }
 
-  // SeLoger via Apify (silentflow~seloger-scraper-ppr — pay per result, proxies inclus)
-  if (sources.includes('seloger')) {
-    console.log('[SCAN] Scraping Bien'ici...');
+  // Bien'ici via Apify (remplace SeLoger bloqué Cloudflare)
+  if (sources.includes('bienici')) {
+    console.log("[SCAN] Scraping Bien'ici...");
     const items = await scraperApifyAsync({
       actorId: 'silentflow~bienici-scraper-ppr',
       input: {
@@ -68,15 +68,15 @@ async function lancerScanAvecDept(dept, sources) {
         deepScrape: false,
         maxItems: 50
       },
-      source: 'BienIci',
+      source: "Bien'ici",
       badge: 'badge-cl',
       mapper: mapBienIci
     });
     annonces.push(...items);
-    console.log(`[BienIci] ${items.length} annonces`);
+    console.log('[BienIci] ' + items.length + ' annonces');
   }
 
-  // PAP.fr via Apify (devnaz~pap-fr-scraper — critères structurés, 100% succès)
+  // PAP.fr via Apify
   if (sources.includes('pap')) {
     console.log('[SCAN] Scraping PAP.fr...');
     const items = await scraperApifyAsync({
@@ -92,18 +92,18 @@ async function lancerScanAvecDept(dept, sources) {
       mapper: mapPAP
     });
     annonces.push(...items);
-    console.log(`[PAP.fr] ${items.length} annonces`);
+    console.log('[PAP.fr] ' + items.length + ' annonces');
   }
 
-  // Agorastore (API publique, ventes judiciaires — gardé en bonus)
+  // Agorastore (API publique, ventes judiciaires — bonus)
   if (sources.includes('agorastore')) {
     console.log('[SCAN] Scraping Agorastore...');
     const items = await scraperAgorastore(dept);
     annonces.push(...items);
-    console.log(`[Agorastore] ${items.length} annonces`);
+    console.log('[Agorastore] ' + items.length + ' annonces');
   }
 
-  console.log(`[SCAN] Total : ${annonces.length} annonces récupérées`);
+  console.log('[SCAN] Total : ' + annonces.length + ' annonces récupérées');
 
   // Scorer
   const annotees = annonces.map(a => ({
@@ -119,7 +119,7 @@ async function lancerScanAvecDept(dept, sources) {
       .upsert(annotees, { onConflict: 'url_source' });
 
     if (error) console.error('[Supabase upsert]', error.message);
-    else console.log(`[SCAN] ${annotees.length} annonces sauvegardées`);
+    else console.log('[SCAN] ' + annotees.length + ' annonces sauvegardées');
   }
 
   await verifierAlertes(annotees.filter(a => a.score_ia >= 8));
@@ -132,7 +132,7 @@ async function scraperApifyAsync({ actorId, input, source, badge, mapper }) {
   try {
     // 1. Démarrer le run
     const startRes = await fetch(
-      `https://api.apify.com/v2/acts/${actorId}/runs?token=${APIFY_TOKEN}`,
+      'https://api.apify.com/v2/acts/' + actorId + '/runs?token=' + APIFY_TOKEN,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -142,15 +142,18 @@ async function scraperApifyAsync({ actorId, input, source, badge, mapper }) {
 
     if (!startRes.ok) {
       const err = await startRes.text();
-      console.error(`[Apify:${source}] Start failed:`, err.slice(0, 200));
+      console.error('[Apify:' + source + '] Start failed:', err.slice(0, 200));
       return [];
     }
 
     const runData = await startRes.json();
-    const runId = runData?.data?.id;
-    if (!runId) { console.error(`[Apify:${source}] Pas de runId`); return []; }
+    const runId = runData && runData.data && runData.data.id;
+    if (!runId) {
+      console.error('[Apify:' + source + '] Pas de runId');
+      return [];
+    }
 
-    console.log(`[Apify:${source}] Run démarré: ${runId}`);
+    console.log('[Apify:' + source + '] Run démarré: ' + runId);
 
     // 2. Poll jusqu'à SUCCEEDED (max 3 min)
     const MAX_WAIT = 180000;
@@ -161,33 +164,33 @@ async function scraperApifyAsync({ actorId, input, source, badge, mapper }) {
       await sleep(POLL_INTERVAL);
 
       const statusRes = await fetch(
-        `https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_TOKEN}`
+        'https://api.apify.com/v2/actor-runs/' + runId + '?token=' + APIFY_TOKEN
       );
       const statusData = await statusRes.json();
-      const status = statusData?.data?.status;
+      const status = statusData && statusData.data && statusData.data.status;
 
-      console.log(`[Apify:${source}] Status: ${status}`);
+      console.log('[Apify:' + source + '] Status: ' + status);
 
       if (status === 'SUCCEEDED') {
-        const datasetId = statusData?.data?.defaultDatasetId;
+        const datasetId = statusData.data.defaultDatasetId;
         const itemsRes = await fetch(
-          `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}&format=json&limit=100`
+          'https://api.apify.com/v2/datasets/' + datasetId + '/items?token=' + APIFY_TOKEN + '&format=json&limit=100'
         );
         const items = await itemsRes.json();
         return (Array.isArray(items) ? items : []).map(item => mapper(item)).filter(Boolean);
       }
 
       if (['FAILED', 'ABORTED', 'TIMED-OUT'].includes(status)) {
-        console.error(`[Apify:${source}] Run terminé avec status: ${status}`);
+        console.error('[Apify:' + source + '] Run terminé avec status: ' + status);
         return [];
       }
     }
 
-    console.warn(`[Apify:${source}] Timeout (3 min) dépassé`);
+    console.warn('[Apify:' + source + '] Timeout (3 min) dépassé');
     return [];
 
   } catch (e) {
-    console.error(`[Apify:${source}]`, e.message);
+    console.error('[Apify:' + source + ']', e.message);
     return [];
   }
 }
@@ -198,16 +201,16 @@ function mapLeBonCoin(item) {
   try {
     const attrs = item.attributes || {};
     const surface = attrs.square ? parseInt(attrs.square) : null;
-    const prix = item.price?.[0] || item.price || null;
-    const cp = item.location?.zipcode || attrs.real_estate_type?.value || null;
-    const ville = item.location?.city || null;
+    const prix = (item.price && item.price[0]) || item.price || null;
+    const cp = (item.location && item.location.zipcode) || null;
+    const ville = (item.location && item.location.city) || null;
     const titre = item.subject || item.title || 'Annonce LeBonCoin';
     const desc = item.body || item.description || '';
 
     return {
       titre: nettoyer(titre),
       description: nettoyer(desc).slice(0, 500),
-      url_source: item.url || `https://www.leboncoin.fr/ventes_immobilieres/${item.list_id}`,
+      url_source: item.url || ('https://www.leboncoin.fr/ventes_immobilieres/' + item.list_id),
       source: 'LeBonCoin',
       badge: 'badge-cl',
       surface: surface,
@@ -216,8 +219,8 @@ function mapLeBonCoin(item) {
       ville: ville,
       type: detecterType(titre + ' ' + desc),
       kws: detecterMotsCles(titre + ' ' + desc),
-      dpe: attrs.energy_rate?.value || null,
-      photos: item.images?.urls_large?.slice(0, 3) || [],
+      dpe: (attrs.energy_rate && attrs.energy_rate.value) || null,
+      photos: (item.images && item.images.urls_large && item.images.urls_large.slice(0, 3)) || [],
       date_annonce: item.first_publication_date || new Date().toISOString(),
       is_new: true,
       created_at: new Date().toISOString()
@@ -229,7 +232,8 @@ function mapLeBonCoin(item) {
 
 function mapBienIci(item) {
   try {
-    const titre = item.title || item.titre || item.name || 'Annonce Bien'ici';
+    // NOTE : ne pas utiliser de guillemet apostrophe dans la string du titre fallback
+    const titre = item.title || item.titre || item.name || 'Annonce Bien ici';
     const desc = item.description || '';
     const prix = item.price || item.prix || item.priceMin || null;
     const surface = item.surface || item.area || null;
@@ -240,7 +244,7 @@ function mapBienIci(item) {
       titre: nettoyer(titre),
       description: nettoyer(desc).slice(0, 500),
       url_source: item.url || item.link || '',
-      source: 'BienIci',
+      source: "Bien'ici",
       badge: 'badge-cl',
       surface: surface ? parseInt(surface) : null,
       prix: prix ? parseInt(String(prix).replace(/\D/g, '')) : null,
@@ -249,7 +253,7 @@ function mapBienIci(item) {
       type: detecterType(titre + ' ' + desc),
       kws: detecterMotsCles(titre + ' ' + desc),
       dpe: item.dpe || item.energyClass || item.energy_class || null,
-      photos: item.photos?.slice(0, 3) || item.images?.slice(0, 3) || [],
+      photos: (item.photos && item.photos.slice(0, 3)) || (item.images && item.images.slice(0, 3)) || [],
       date_annonce: item.publicationDate || item.firstPublicationDate || new Date().toISOString(),
       is_new: true,
       created_at: new Date().toISOString()
@@ -281,7 +285,7 @@ function mapPAP(item) {
       type: detecterType(titre + ' ' + desc),
       kws: detecterMotsCles(titre + ' ' + desc),
       dpe: item.dpe || item.energyClass || null,
-      photos: item.photos?.slice(0, 3) || [],
+      photos: (item.photos && item.photos.slice(0, 3)) || [],
       date_annonce: item.publicationDate || item.date || new Date().toISOString(),
       is_new: true,
       created_at: new Date().toISOString()
@@ -293,14 +297,11 @@ function mapPAP(item) {
 
 // ─── Builders d'URL de recherche ──────────────────────────
 function buildLeBonCoinUrl(dept) {
-  // Catégorie 9 = Ventes immobilières sur LeBonCoin
   const base = 'https://www.leboncoin.fr/recherche?category=9&real_estate_type=1,2,3,4,5';
-  return dept ? `${base}&locations=department-${dept}` : base;
+  return dept ? (base + '&locations=department-' + dept) : base;
 }
 
 function buildBienIciUrl(dept) {
-  // URL de recherche Bien'ici — format avec code postal ou France entiere
-  // Exemple: https://www.bienici.com/recherche/achat/paris-75000
   if (dept) {
     return 'https://www.bienici.com/recherche/achat/departement-' + dept;
   }
@@ -310,7 +311,7 @@ function buildBienIciUrl(dept) {
 // ─── Agorastore (API publique, bonus) ─────────────────────
 async function scraperAgorastore(dept) {
   try {
-    const url = `https://www.agorastore.fr/api/v1/lots?categorie=immobilier&limit=20${dept ? '&departement=' + dept : ''}`;
+    const url = 'https://www.agorastore.fr/api/v1/lots?categorie=immobilier&limit=20' + (dept ? ('&departement=' + dept) : '');
     const res = await fetch(url, {
       headers: { 'Accept': 'application/json', 'User-Agent': 'AIMMO/3.0' },
       timeout: 8000
@@ -318,22 +319,24 @@ async function scraperAgorastore(dept) {
     if (!res.ok) return [];
     const data = await res.json();
     const lots = data.lots || data.results || data || [];
-    return lots.slice(0, 10).map(lot => ({
-      titre: lot.titre || lot.title || 'Bien aux enchères',
-      description: lot.description || '',
-      url_source: `https://www.agorastore.fr/lot/${lot.id || lot.reference}`,
-      source: 'Agorastore',
-      badge: 'badge-jd',
-      surface: lot.surface ? parseInt(lot.surface) : null,
-      prix: lot.mise_a_prix || lot.startingPrice || null,
-      cp: lot.code_postal || null,
-      ville: lot.ville || lot.city || null,
-      type: detecterType(lot.titre || ''),
-      kws: ['enchères', 'judiciaire'],
-      date_annonce: new Date().toISOString(),
-      is_new: true,
-      created_at: new Date().toISOString()
-    }));
+    return lots.slice(0, 10).map(function(lot) {
+      return {
+        titre: lot.titre || lot.title || 'Bien aux enchères',
+        description: lot.description || '',
+        url_source: 'https://www.agorastore.fr/lot/' + (lot.id || lot.reference),
+        source: 'Agorastore',
+        badge: 'badge-jd',
+        surface: lot.surface ? parseInt(lot.surface) : null,
+        prix: lot.mise_a_prix || lot.startingPrice || null,
+        cp: lot.code_postal || null,
+        ville: lot.ville || lot.city || null,
+        type: detecterType(lot.titre || ''),
+        kws: ['enchères', 'judiciaire'],
+        date_annonce: new Date().toISOString(),
+        is_new: true,
+        created_at: new Date().toISOString()
+      };
+    });
   } catch (e) {
     console.error('[scraperAgorastore]', e.message);
     return [];
@@ -366,7 +369,7 @@ function calculerScoreMetier(annonce) {
   }
 
   if (annonce.is_new) score += 0.3;
-  if (['Agorastore'].includes(annonce.source)) score += 0.8;
+  if (annonce.source === 'Agorastore') score += 0.8;
 
   return Math.min(10, Math.max(1, Math.round(score * 10) / 10));
 }
@@ -375,7 +378,7 @@ function calculerIndicateurs(annonce) {
   const pm2 = annonce.prix && annonce.surface ? Math.round(annonce.prix / annonce.surface) : null;
   const isUrgent = (annonce.kws || []).some(k => ['urgent', 'succession', 'abandon'].includes(k));
   return {
-    pm2,
+    pm2: pm2,
     is_urgent: isUrgent,
     has_dpe_issue: annonce.dpe === 'F' || annonce.dpe === 'G',
     aide_estimee: annonce.dpe === 'G' ? '30 000 - 50 000 €' : annonce.dpe === 'F' ? '15 000 - 30 000 €' : '0 €',
@@ -392,7 +395,7 @@ async function verifierAlertes(annoncesHauteScore) {
       .from('alertes')
       .select('*, users(email)')
       .eq('active', true);
-    if (!alertes?.length) return;
+    if (!alertes || !alertes.length) return;
     for (const alerte of alertes) {
       const criteres = alerte.criteres || {};
       const matches = annoncesHauteScore.filter(a => {
@@ -402,7 +405,7 @@ async function verifierAlertes(annoncesHauteScore) {
         return true;
       });
       if (matches.length > 0) {
-        console.log(`[ALERTE] ${matches.length} match(es) pour user ${alerte.user_id}`);
+        console.log('[ALERTE] ' + matches.length + ' match(es) pour user ' + alerte.user_id);
       }
     }
   } catch (e) {
@@ -411,11 +414,19 @@ async function verifierAlertes(annoncesHauteScore) {
 }
 
 // ─── Utils ────────────────────────────────────────────────
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
 
 function nettoyer(str) {
   if (!str) return '';
-  return String(str).replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#039;/g, "'").trim();
+  return String(str)
+    .replace(/<[^>]*>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#039;/g, "'")
+    .trim();
 }
 
 function detecterType(texte) {
@@ -440,7 +451,8 @@ function detecterMotsCles(texte) {
     'enchères': ['enchères', 'mise à prix', 'adjudication'],
     'dégradé': ['dégradé', 'mauvais état', 'ruine', 'délabré']
   };
-  for (const [label, patterns] of Object.entries(dict)) {
+  for (const label in dict) {
+    const patterns = dict[label];
     if (patterns.some(p => t.includes(p))) mots.push(label);
   }
   return mots;
