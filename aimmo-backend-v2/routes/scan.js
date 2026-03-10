@@ -62,7 +62,7 @@ async function lancerScanAvecDept(dept, sources, userId) {
   if (sources.includes('pap')) {
     console.log('[SCAN] Scraping PAP.fr...');
     const items = await scraperApifyAsync({
-      actorId: 'azzouzana/pap-fr-mass-products-scraper-by-search-url',
+      actorId: 'azzouzana~pap-fr-mass-products-scraper-by-search-url',
       input: {
         startUrl: dept
           ? `https://www.pap.fr/annonce/vente-appartement-maison-terrain?geo_departement=${dept}`
