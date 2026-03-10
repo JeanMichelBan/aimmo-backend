@@ -275,7 +275,12 @@ function mapPAP(item) {
       kws: detecterMotsCles(titre + ' ' + desc),
       dpe: dpe,
       photos: Array.isArray(item.photos) ? item.photos.slice(0, 5) : [],
-      date_annonce: item.__scrapedAt || new Date().toISOString(),
+      date_annonce: (() => {
+      // item.date = "10 mars 2026" — format français non accepté par Supabase
+      // On utilise __scrapedAt (ISO) ou fallback new Date()
+      if (item.__scrapedAt) return item.__scrapedAt;
+      return new Date().toISOString();
+    })(),
       is_new: true,
       created_at: new Date().toISOString()
     };
