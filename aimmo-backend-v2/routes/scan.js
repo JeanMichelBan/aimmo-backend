@@ -62,7 +62,7 @@ async function lancerScanAvecDept(dept, sources, userId) {
   if (sources.includes('pap')) {
     console.log('[SCAN] Scraping PAP.fr...');
     const items = await scraperApifyAsync({
-      actorId: 'azzouzana~pap-fr-mass-products-scraper-by-search-url',
+      actorId: 'azzouzana/pap-fr-mass-products-scraper-by-search-url',
       input: {
         startUrl: dept
           ? `https://www.pap.fr/annonce/vente-appartement-maison-terrain?geo_departement=${dept}`
@@ -234,34 +234,53 @@ function mapLeBonCoin(item) {
 
 function mapPAP(item) {
   try {
-    const titre = item.title || item.titre || item.libelle || 'Annonce PAP.fr';
-    const desc = item.description || item.texte || '';
-    const prix = item.price || item.prix || item.prix_vente || null;
-    const surface = item.surface || item.area || item.surface_habitable || null;
-    const cp = item.zipCode || item.postalCode || item.codePostal || item.code_postal || null;
-    const ville = item.city || item.ville || item.commune || null;
+    // item.titre = "Saint-Maur-des-Fossés (94)" — ville + CP
+    const titreVille = item.titre || '';
+    const cpMatch = titreVille.match(/\((\d{2,5}[AB]?)\)/);
+    const cp = cpMatch ? cpMatch[1].padStart(2, '0') : null;
+    const ville = titreVille.replace(/\s*\(.*\)/, '').trim() || null;
+
+    // item.caracteristiques = "Appartement / 3 pièces / 89,34 m²"
+    const carac = item.caracteristiques || '';
+    const surfMatch = carac.match(/([\d,]+)\s*m²/);
+    const surface = surfMatch ? Math.round(parseFloat(surfMatch[1].replace(',', '.'))) : null;
+
+    // item.prix = "545.000 €" — supprimer tout sauf chiffres
+    const prixStr = String(item.prix || '').replace(/[^\d]/g, '');
+    const prix = prixStr ? parseInt(prixStr) : null;
+
+    // Titre lisible = type + ville
+    const typeBien = item.typebien_label || 'Bien';
+    const titre = typeBien + ' - ' + titreVille;
+
+    // DPE depuis classe_energie.lettre
+    const dpe = (item.classe_energie && item.classe_energie.lettre)
+      ? item.classe_energie.lettre.toUpperCase()
+      : null;
+
+    const desc = item.texte || item.texte_accroche || '';
+    const urlSource = item.url || ('https://www.pap.fr/annonces/-r' + item.id);
 
     return {
       titre: nettoyer(titre),
       description: nettoyer(desc).slice(0, 500),
-      url_source: item.url || item.link || item.href || '',
+      url_source: urlSource,
       source: 'PAP.fr',
       badge: 'badge-cl',
-      surface: surface ? parseInt(surface) : null,
-      prix: prix ? parseInt(String(prix).replace(/\D/g, '')) : null,
-      cp: cp ? String(cp) : null,
+      surface: surface,
+      prix: prix,
+      cp: cp,
       ville: ville,
-      type: detecterType(titre + ' ' + desc),
+      type: item.typebien_label || detecterType(titre + ' ' + desc),
       kws: detecterMotsCles(titre + ' ' + desc),
-      dpe: item.dpe || item.energyClass || item.classe_energie || null,
-      photos: (item.photos && item.photos.slice(0, 3)) ||
-              (item.images && item.images.slice(0, 3)) ||
-              (item.photo ? [item.photo] : []),
-      date_annonce: item.publicationDate || item.date_parution || item.date || new Date().toISOString(),
+      dpe: dpe,
+      photos: Array.isArray(item.photos) ? item.photos.slice(0, 5) : [],
+      date_annonce: item.__scrapedAt || new Date().toISOString(),
       is_new: true,
       created_at: new Date().toISOString()
     };
   } catch (e) {
+    console.error('[mapPAP]', e.message);
     return null;
   }
 }
