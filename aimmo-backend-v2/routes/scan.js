@@ -46,9 +46,9 @@ async function lancerScanAvecDept(dept, sources, userId) {
     const items = await scraperApifyAsync({
       actorId: 'fatihtahta~leboncoin-fr-scraper',
       input: {
-        startUrls: [{ url: buildLeBonCoinUrl(dept) }],
-        maxItems: 50
-      },
+  startUrls: [buildLeBonCoinUrl(dept)],
+  maxItems: 50
+},
       source: 'LeBonCoin',
       badge: 'badge-cl',
       mapper: mapLeBonCoin
