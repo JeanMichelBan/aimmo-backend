@@ -15,10 +15,9 @@ router.post('/', async (req, res) => {
   try {
     const { dept, sources = ['leboncoin', 'bienici', 'pap'], userId } = req.body;
 
-    // Répondre immédiatement, scan en arrière-plan
     res.json({ success: true, message: 'Scan démarré en arrière-plan', jobId: Date.now() });
 
-    lancerScanAvecDept(dept, sources).catch(console.error);
+    lancerScanAvecDept(dept, sources, userId).catch(console.error);
 
   } catch (e) {
     console.error('[/api/scan]', e.message);
@@ -29,11 +28,12 @@ router.post('/', async (req, res) => {
 // ─── Scan automatique (cron) ──────────────────────────────
 async function lancerScanAuto() {
   console.log('[SCAN AUTO] Démarrage...');
-  await lancerScanAvecDept(null, ['leboncoin', 'bienici', 'pap']);
+  await lancerScanAvecDept(null, ['leboncoin', 'bienici', 'pap'], null);
 }
 
-async function lancerScanAvecDept(dept, sources) {
+async function lancerScanAvecDept(dept, sources, userId) {
   const annonces = [];
+  const statsParSource = {};
 
   if (!APIFY_TOKEN) {
     console.error('[SCAN] APIFY_API_KEY manquante — aucun scraping possible');
@@ -54,10 +54,11 @@ async function lancerScanAvecDept(dept, sources) {
       mapper: mapLeBonCoin
     });
     annonces.push(...items);
+    statsParSource['leboncoin'] = items.length;
     console.log('[LeBonCoin] ' + items.length + ' annonces');
   }
 
-  // Bien'ici via Apify (remplace SeLoger bloqué Cloudflare)
+  // Bien'ici via Apify
   if (sources.includes('bienici')) {
     console.log("[SCAN] Scraping Bien'ici...");
     const items = await scraperApifyAsync({
@@ -73,6 +74,7 @@ async function lancerScanAvecDept(dept, sources) {
       mapper: mapBienIci
     });
     annonces.push(...items);
+    statsParSource['bienici'] = items.length;
     console.log('[BienIci] ' + items.length + ' annonces');
   }
 
@@ -92,14 +94,16 @@ async function lancerScanAvecDept(dept, sources) {
       mapper: mapPAP
     });
     annonces.push(...items);
+    statsParSource['pap'] = items.length;
     console.log('[PAP.fr] ' + items.length + ' annonces');
   }
 
-  // Agorastore (API publique, ventes judiciaires — bonus)
+  // Agorastore
   if (sources.includes('agorastore')) {
     console.log('[SCAN] Scraping Agorastore...');
     const items = await scraperAgorastore(dept);
     annonces.push(...items);
+    statsParSource['agorastore'] = items.length;
     console.log('[Agorastore] ' + items.length + ' annonces');
   }
 
@@ -112,14 +116,32 @@ async function lancerScanAvecDept(dept, sources) {
     indicateurs: calculerIndicateurs(a)
   }));
 
+  let nbNouvelles = 0;
+
   // Upsert Supabase
   if (annotees.length > 0) {
-    const { error } = await supabase
+    const { data: upserted, error } = await supabase
       .from('annonces')
       .upsert(annotees, { onConflict: 'url_source' });
 
     if (error) console.error('[Supabase upsert]', error.message);
-    else console.log('[SCAN] ' + annotees.length + ' annonces sauvegardées');
+    else {
+      nbNouvelles = annotees.length;
+      console.log('[SCAN] ' + annotees.length + ' annonces sauvegardées');
+    }
+  }
+
+  // ─── Sauvegarder historique scan ──────────────────────
+  for (const source of Object.keys(statsParSource)) {
+    await supabase.from('scans').insert({
+      user_id: userId || null,
+      source: source,
+      nb_annonces: statsParSource[source],
+      nb_nouvelles: statsParSource[source],
+      nb_alertes: 0,
+      statut: 'ok',
+      created_at: new Date().toISOString()
+    });
   }
 
   await verifierAlertes(annotees.filter(a => a.score_ia >= 8));
@@ -130,7 +152,6 @@ async function lancerScanAvecDept(dept, sources) {
 // ─── Runner Apify générique (asynchrone + poll) ───────────
 async function scraperApifyAsync({ actorId, input, source, badge, mapper }) {
   try {
-    // 1. Démarrer le run
     const startRes = await fetch(
       'https://api.apify.com/v2/acts/' + actorId + '/runs?token=' + APIFY_TOKEN,
       {
@@ -155,7 +176,6 @@ async function scraperApifyAsync({ actorId, input, source, badge, mapper }) {
 
     console.log('[Apify:' + source + '] Run démarré: ' + runId);
 
-    // 2. Poll jusqu'à SUCCEEDED (max 3 min)
     const MAX_WAIT = 180000;
     const POLL_INTERVAL = 8000;
     const startTime = Date.now();
@@ -232,8 +252,7 @@ function mapLeBonCoin(item) {
 
 function mapBienIci(item) {
   try {
-    // NOTE : ne pas utiliser de guillemet apostrophe dans la string du titre fallback
-    const titre = item.title || item.titre || item.name || 'Annonce Bien ici';
+    const titre = item.title || item.titre || item.name || 'Annonce Bienici';
     const desc = item.description || '';
     const prix = item.price || item.prix || item.priceMin || null;
     const surface = item.surface || item.area || null;
@@ -295,20 +314,18 @@ function mapPAP(item) {
   }
 }
 
-// ─── Builders d'URL de recherche ──────────────────────────
+// ─── Builders d'URL ───────────────────────────────────────
 function buildLeBonCoinUrl(dept) {
   const base = 'https://www.leboncoin.fr/recherche?category=9&real_estate_type=1,2,3,4,5';
   return dept ? (base + '&locations=department-' + dept) : base;
 }
 
 function buildBienIciUrl(dept) {
-  if (dept) {
-    return 'https://www.bienici.com/recherche/achat/departement-' + dept;
-  }
+  if (dept) return 'https://www.bienici.com/recherche/achat/departement-' + dept;
   return 'https://www.bienici.com/recherche/achat/france';
 }
 
-// ─── Agorastore (API publique, bonus) ─────────────────────
+// ─── Agorastore ───────────────────────────────────────────
 async function scraperAgorastore(dept) {
   try {
     const url = 'https://www.agorastore.fr/api/v1/lots?categorie=immobilier&limit=20' + (dept ? ('&departement=' + dept) : '');
@@ -321,7 +338,7 @@ async function scraperAgorastore(dept) {
     const lots = data.lots || data.results || data || [];
     return lots.slice(0, 10).map(function(lot) {
       return {
-        titre: lot.titre || lot.title || 'Bien aux enchères',
+        titre: lot.titre || lot.title || 'Bien aux encheres',
         description: lot.description || '',
         url_source: 'https://www.agorastore.fr/lot/' + (lot.id || lot.reference),
         source: 'Agorastore',
@@ -331,7 +348,7 @@ async function scraperAgorastore(dept) {
         cp: lot.code_postal || null,
         ville: lot.ville || lot.city || null,
         type: detecterType(lot.titre || ''),
-        kws: ['enchères', 'judiciaire'],
+        kws: ['encheres', 'judiciaire'],
         date_annonce: new Date().toISOString(),
         is_new: true,
         created_at: new Date().toISOString()
@@ -356,8 +373,8 @@ function calculerScoreMetier(annonce) {
   }
 
   const motsCles = annonce.kws || [];
-  const mots_haute_valeur = ['succession', 'abandon', 'sans maître', 'judiciaire', 'enchères'];
-  const mots_urgence = ['urgent', 'vente rapide', 'à saisir', 'prix négociable'];
+  const mots_haute_valeur = ['succession', 'abandon', 'sans maitre', 'judiciaire', 'encheres'];
+  const mots_urgence = ['urgent', 'vente rapide', 'a saisir', 'prix negociable'];
   score += Math.min(motsCles.filter(k => mots_haute_valeur.some(m => k.includes(m))).length * 1.2, 2.4);
   score += Math.min(motsCles.filter(k => mots_urgence.some(m => k.includes(m))).length * 0.5, 1.0);
 
@@ -431,7 +448,7 @@ function nettoyer(str) {
 
 function detecterType(texte) {
   const t = (texte || '').toLowerCase();
-  if (t.includes('château') || t.includes('manoir') || t.includes('castle')) return 'Château';
+  if (t.includes('chateau') || t.includes('manoir') || t.includes('castle')) return 'Chateau';
   if (t.includes('ferme') || t.includes('corps de ferme') || t.includes('grange')) return 'Ferme';
   if (t.includes('maison') || t.includes('villa') || t.includes('pavillon') || t.includes('house')) return 'Maison';
   if (t.includes('appartement') || t.includes('appart') || t.includes('studio') || t.includes('flat')) return 'Appartement';
@@ -443,13 +460,13 @@ function detecterMotsCles(texte) {
   const t = (texte || '').toLowerCase();
   const mots = [];
   const dict = {
-    'succession': ['succession', 'héritiers', 'héritage'],
-    'urgent': ['urgent', 'vente rapide', 'à saisir', 'rapidement'],
-    'abandon': ['abandon', 'sans maître', 'délaissé', 'vacant', 'inoccupé'],
-    'travaux': ['travaux', 'à rénover', 'rénovation', 'dégradé', 'état moyen'],
-    'notaire': ['notaire', 'étude notariale'],
-    'enchères': ['enchères', 'mise à prix', 'adjudication'],
-    'dégradé': ['dégradé', 'mauvais état', 'ruine', 'délabré']
+    'succession': ['succession', 'heritiers', 'heritage'],
+    'urgent': ['urgent', 'vente rapide', 'a saisir', 'rapidement'],
+    'abandon': ['abandon', 'sans maitre', 'delaisse', 'vacant', 'inoccupe'],
+    'travaux': ['travaux', 'a renover', 'renovation', 'degrade', 'etat moyen'],
+    'notaire': ['notaire', 'etude notariale'],
+    'encheres': ['encheres', 'mise a prix', 'adjudication'],
+    'degrade': ['degrade', 'mauvais etat', 'ruine', 'delabre']
   };
   for (const label in dict) {
     const patterns = dict[label];
