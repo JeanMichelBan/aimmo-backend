@@ -13,7 +13,7 @@ const APIFY_TOKEN = process.env.APIFY_API_KEY;
 // ─── POST /api/scan ────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const { dept, sources = ['leboncoin', 'bienici', 'pap'], userId } = req.body;
+    const { dept, sources = ['leboncoin', 'pap'], userId } = req.body;
 
     res.json({ success: true, message: 'Scan démarré en arrière-plan', jobId: Date.now() });
 
@@ -28,7 +28,7 @@ router.post('/', async (req, res) => {
 // ─── Scan automatique (cron) ──────────────────────────────
 async function lancerScanAuto() {
   console.log('[SCAN AUTO] Démarrage...');
-  await lancerScanAvecDept(null, ['leboncoin', 'bienici', 'pap'], null);
+  await lancerScanAvecDept(null, ['leboncoin', 'pap'], null);
 }
 
 async function lancerScanAvecDept(dept, sources, userId) {
@@ -46,9 +46,9 @@ async function lancerScanAvecDept(dept, sources, userId) {
     const items = await scraperApifyAsync({
       actorId: 'fatihtahta~leboncoin-fr-scraper',
       input: {
-  startUrls: [buildLeBonCoinUrl(dept)],
-  maxItems: 50
-},
+        startUrls: [buildLeBonCoinUrl(dept)],
+        maxItems: 50
+      },
       source: 'LeBonCoin',
       badge: 'badge-cl',
       mapper: mapLeBonCoin
@@ -58,36 +58,16 @@ async function lancerScanAvecDept(dept, sources, userId) {
     console.log('[LeBonCoin] ' + items.length + ' annonces');
   }
 
-  // Bien'ici via Apify
-  if (sources.includes('bienici')) {
-    console.log("[SCAN] Scraping Bien'ici...");
-    const items = await scraperApifyAsync({
-      actorId: 'silentflow~bienici-scraper-ppr',
-      input: {
-        startUrls: [{ url: buildBienIciUrl(dept) }],
-        pages: 3,
-        deepScrape: false,
-        maxItems: 50
-      },
-      source: "Bien'ici",
-      badge: 'badge-cl',
-      mapper: mapBienIci
-    });
-    annonces.push(...items);
-    statsParSource['bienici'] = items.length;
-    console.log('[BienIci] ' + items.length + ' annonces');
-  }
-
   // PAP.fr via Apify
   if (sources.includes('pap')) {
     console.log('[SCAN] Scraping PAP.fr...');
     const items = await scraperApifyAsync({
-      actorId: 'devnaz~pap-fr-scraper',
+      actorId: 'azzouzana/pap-fr-mass-products-scraper-by-search-url',
       input: {
-        transactionType: 'SALE',
-        propertyTypes: ['HOUSE', 'APARTMENT', 'LAND', 'CASTLE'],
-        ...(dept ? { city: dept } : {}),
-        maxListings: 50
+        startUrl: dept
+          ? `https://www.pap.fr/annonce/vente-appartement-maison-terrain?geo_departement=${dept}`
+          : 'https://www.pap.fr/annonce/vente-appartement-maison',
+        maxItemsToScrape: 50
       },
       source: 'PAP.fr',
       badge: 'badge-cl',
@@ -97,6 +77,8 @@ async function lancerScanAvecDept(dept, sources, userId) {
     statsParSource['pap'] = items.length;
     console.log('[PAP.fr] ' + items.length + ' annonces');
   }
+
+  // Bien'ici — désactivé (bloqué 403 proxy)
 
   // Agorastore
   if (sources.includes('agorastore')) {
@@ -250,62 +232,32 @@ function mapLeBonCoin(item) {
   }
 }
 
-function mapBienIci(item) {
-  try {
-    const titre = item.title || item.titre || item.name || 'Annonce Bienici';
-    const desc = item.description || '';
-    const prix = item.price || item.prix || item.priceMin || null;
-    const surface = item.surface || item.area || null;
-    const cp = item.zipCode || item.codePostal || item.postalCode || null;
-    const ville = item.city || item.ville || item.locality || null;
-
-    return {
-      titre: nettoyer(titre),
-      description: nettoyer(desc).slice(0, 500),
-      url_source: item.url || item.link || '',
-      source: "Bien'ici",
-      badge: 'badge-cl',
-      surface: surface ? parseInt(surface) : null,
-      prix: prix ? parseInt(String(prix).replace(/\D/g, '')) : null,
-      cp: cp,
-      ville: ville,
-      type: detecterType(titre + ' ' + desc),
-      kws: detecterMotsCles(titre + ' ' + desc),
-      dpe: item.dpe || item.energyClass || item.energy_class || null,
-      photos: (item.photos && item.photos.slice(0, 3)) || (item.images && item.images.slice(0, 3)) || [],
-      date_annonce: item.publicationDate || item.firstPublicationDate || new Date().toISOString(),
-      is_new: true,
-      created_at: new Date().toISOString()
-    };
-  } catch (e) {
-    return null;
-  }
-}
-
 function mapPAP(item) {
   try {
-    const titre = item.title || item.titre || 'Annonce PAP.fr';
-    const desc = item.description || '';
-    const prix = item.price || item.prix || null;
-    const surface = item.surface || item.area || null;
-    const cp = item.zipCode || item.postalCode || item.codePostal || null;
-    const ville = item.city || item.ville || null;
+    const titre = item.title || item.titre || item.libelle || 'Annonce PAP.fr';
+    const desc = item.description || item.texte || '';
+    const prix = item.price || item.prix || item.prix_vente || null;
+    const surface = item.surface || item.area || item.surface_habitable || null;
+    const cp = item.zipCode || item.postalCode || item.codePostal || item.code_postal || null;
+    const ville = item.city || item.ville || item.commune || null;
 
     return {
       titre: nettoyer(titre),
       description: nettoyer(desc).slice(0, 500),
-      url_source: item.url || item.link || '',
+      url_source: item.url || item.link || item.href || '',
       source: 'PAP.fr',
       badge: 'badge-cl',
       surface: surface ? parseInt(surface) : null,
       prix: prix ? parseInt(String(prix).replace(/\D/g, '')) : null,
-      cp: cp,
+      cp: cp ? String(cp) : null,
       ville: ville,
       type: detecterType(titre + ' ' + desc),
       kws: detecterMotsCles(titre + ' ' + desc),
-      dpe: item.dpe || item.energyClass || null,
-      photos: (item.photos && item.photos.slice(0, 3)) || [],
-      date_annonce: item.publicationDate || item.date || new Date().toISOString(),
+      dpe: item.dpe || item.energyClass || item.classe_energie || null,
+      photos: (item.photos && item.photos.slice(0, 3)) ||
+              (item.images && item.images.slice(0, 3)) ||
+              (item.photo ? [item.photo] : []),
+      date_annonce: item.publicationDate || item.date_parution || item.date || new Date().toISOString(),
       is_new: true,
       created_at: new Date().toISOString()
     };
@@ -318,11 +270,6 @@ function mapPAP(item) {
 function buildLeBonCoinUrl(dept) {
   const base = 'https://www.leboncoin.fr/recherche?category=9&real_estate_type=1,2,3,4,5';
   return dept ? (base + '&locations=department-' + dept) : base;
-}
-
-function buildBienIciUrl(dept) {
-  if (dept) return 'https://www.bienici.com/recherche/achat/departement-' + dept;
-  return 'https://www.bienici.com/recherche/achat/france';
 }
 
 // ─── Agorastore ───────────────────────────────────────────
