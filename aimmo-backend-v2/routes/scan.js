@@ -58,21 +58,10 @@ async function lancerScanAvecDept(dept, sources, userId) {
     console.log('[LeBonCoin] ' + items.length + ' annonces');
   }
 
-  // PAP.fr via Apify
+  // PAP.fr direct (sans Apify)
   if (sources.includes('pap')) {
     console.log('[SCAN] Scraping PAP.fr...');
-    const items = await scraperApifyAsync({
-      actorId: 'azzouzana/pap-fr-mass-products-scraper-by-search-url',
-      input: {
-        startUrl: dept
-          ? `https://www.pap.fr/annonce/vente-appartement-maison-terrain?geo_departement=${dept}`
-          : 'https://www.pap.fr/annonce/vente-appartement-maison',
-        maxItemsToScrape: 50
-      },
-      source: 'PAP.fr',
-      badge: 'badge-cl',
-      mapper: mapPAP
-    });
+    const items = await scraperPAPDirect(dept);
     annonces.push(...items);
     statsParSource['pap'] = items.length;
     console.log('[PAP.fr] ' + items.length + ' annonces');
@@ -294,6 +283,50 @@ function mapPAP(item) {
 function buildLeBonCoinUrl(dept) {
   const base = 'https://www.leboncoin.fr/recherche?category=9&real_estate_type=1,2,3,4,5';
   return dept ? (base + '&locations=department-' + dept) : base;
+}
+
+// ─── PAP direct (sans Apify) ─────────────────────────────
+async function scraperPAPDirect(dept) {
+  try {
+    // PAP expose une API JSON interne utilisée par leur app mobile
+    // Endpoint : /annonce/recherche.json avec paramètres de recherche
+    const params = new URLSearchParams({
+      'recherche[produit]': 'vente',
+      'recherche[typesbien][]': 'appartement,maison,terrain',
+      'recherche[nb_resultats]': '50',
+      'order': 'date-desc'
+    });
+    if (dept) {
+      params.set('recherche[geo_departement][]', dept);
+    }
+
+    const url = 'https://www.pap.fr/annonce/recherche.json?' + params.toString();
+    console.log('[PAP direct] URL:', url);
+
+    const res = await fetch(url, {
+      headers: {
+        'Accept': 'application/json, text/javascript, */*',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.pap.fr/',
+        'X-Requested-With': 'XMLHttpRequest'
+      }
+    });
+
+    if (!res.ok) {
+      console.error('[PAP direct] HTTP', res.status);
+      return [];
+    }
+
+    const data = await res.json();
+    // L'API retourne { annonces: [...] } ou { ads: [...] } ou directement un tableau
+    const liste = data.annonces || data.ads || data.results || (Array.isArray(data) ? data : []);
+    console.log('[PAP direct] ' + liste.length + ' annonces brutes');
+
+    return liste.map(mapPAP).filter(Boolean);
+  } catch (e) {
+    console.error('[PAP direct]', e.message);
+    return [];
+  }
 }
 
 // ─── Agorastore ───────────────────────────────────────────
